@@ -405,9 +405,110 @@ select {
 }
 .grid-detail {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 1rem;
   margin-bottom: 1rem;
+}
+.live-conversation-column .hint .ticks-read-sample {
+  color: #5eb3f0;
+  font-weight: 650;
+}
+.live-conversation-thread {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0d1117;
+  min-height: 12rem;
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.5rem 0.45rem;
+  font-size: 0.88rem;
+}
+.live-conv-placeholder {
+  margin: 0.5rem 0.35rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.live-msg-row {
+  display: flex;
+  margin-bottom: 0.5rem;
+}
+.live-msg-row--out {
+  justify-content: flex-end;
+}
+.live-msg-row--in {
+  justify-content: flex-start;
+}
+.live-msg-bubble {
+  max-width: min(100%, 19rem);
+  border-radius: 10px;
+  padding: 0.4rem 0.55rem 0.35rem;
+  line-height: 1.38;
+  word-break: break-word;
+}
+.live-msg-row--out .live-msg-bubble {
+  background: #1e3a52;
+  border: 1px solid #2d5a82;
+}
+.live-msg-row--in .live-msg-bubble {
+  background: #1a2330;
+  border: 1px solid var(--border);
+}
+.live-msg-who {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+.live-msg-body {
+  white-space: pre-wrap;
+}
+.live-msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.live-msg-meta--out {
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+.live-msg-meta--in {
+  justify-content: space-between;
+  align-items: baseline;
+  width: 100%;
+}
+.live-msg-line-id {
+  opacity: 0.88;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.71rem;
+}
+.msg-ticks {
+  font-size: 0.88rem;
+  line-height: 1;
+}
+.msg-ticks-delivered {
+  color: var(--muted);
+}
+.msg-ticks-read {
+  color: #5eb3f0;
+}
+.live-msg-inread {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-left: auto;
+}
+.live-msg-inread.is-read {
+  color: #9ec5e8;
+}
+.live-msg-inread .msg-ticks {
+  font-size: 0.75rem;
 }
 .qmap {
   font-size: 0.88rem;

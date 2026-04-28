@@ -177,17 +177,14 @@
             <button type="button" id="btnCloseFull" class="danger">Close full conversation</button>
           </div>
         </div>
-        <div>
-          <h3 class="h3">Delivery / read (consumer messages)</h3>
+        <div class="live-conversation-column">
+          <h3 class="h3">Live messages</h3>
           <p class="hint">
-            For assigned agents/consumers, the SDK message object supports <code>accept()</code> and
-            <code>read()</code> as in the README.
+            Messages in the MAIN dialog · <strong>your</strong> lines show ✓ (delivered / on channel) vs <strong class="ticks-read-sample">✓✓</strong>
+            blue when LP reports the visitor has read. Incoming visitor lines are <strong>accepted automatically</strong> when the UI sees them,
+            and marked <strong>read</strong> after that when this conversation’s detail pane is open.
           </p>
-          <label>Sequence # <input type="number" id="seqInput" min="0" step="1" /></label>
-          <div class="btn-row">
-            <button type="button" id="btnAccept">Accept</button>
-            <button type="button" id="btnRead">Read</button>
-          </div>
+          <div id="liveConvThread" class="live-conversation-thread" tabindex="0" role="log" aria-label="Conversation messages"></div>
         </div>
       </div>
       <h3 class="h3">Messages &amp; participants</h3>
@@ -208,7 +205,7 @@
         <li><strong>4 Names in history</strong> — message JSON includes <code>participant</code> and roles.</li>
         <li><strong>5–6 Chat state (“typing”)</strong> — Your typing badge + <strong>Consumer composing / active</strong>
           from chat-state; other roles under <strong>Others</strong>.</li>
-        <li><strong>7 Read/delivered</strong> — flags on serialized messages; accept/read on consumer lines.</li>
+        <li><strong>7 Read/delivered</strong> — flags on serialized messages; inbound visitor messages auto accept (and read while the pane is open).</li>
         <li><strong>8–9 Transfer / queue</strong> — transfer skill/agent, leave, back-to-queue and transfer events in SSE.</li>
         <li><strong>10 Close / survey</strong> — two close modes documented in README.</li>
         <li><strong>11 WebSocket</strong> — server holds one SDK (WebSocket) connection; client uses HTTP + SSE.</li>

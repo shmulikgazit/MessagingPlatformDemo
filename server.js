@@ -91,9 +91,10 @@ app.get('/api/conversations', (req, res) => {
   }
 });
 
-app.get('/api/conversations/:id', (req, res) => {
+app.get('/api/conversations/:id', async (req, res) => {
   try {
-    res.json({ success: true, data: lp.getConversationSnapshot(req.params.id) });
+    const data = await lp.getConversationSnapshot(req.params.id);
+    res.json({ success: true, data });
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message || String(e) });
   }

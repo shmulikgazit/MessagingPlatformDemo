@@ -305,13 +305,13 @@ async function refreshConversationsUi() {
   }
   try {
     const j = await jfetch('/api/conversations/' + encodeURIComponent(state.selectedId));
-    $('convJson').textContent = JSON.stringify(j.data, null, 2);
-    syncConsumerTypingFromConversationPayload(j.data);
+    applyConversationSnapshot(j.data);
     document.querySelectorAll('.conv-item').forEach((b) => {
       b.classList.toggle('active', b.textContent.startsWith(state.selectedId));
     });
   } catch (e) {
     $('convJson').textContent = String(e.message || e);
+    renderLiveConversationThread(null);
   }
 }
 
@@ -358,6 +358,296 @@ function syncConsumerTypingFromConversationPayload(payload) {
     return;
   }
   updateConsumerTypingBadge(cp.chatState);
+}
+
+function clearConversationDetailSnapshots() {
+  if ($('convJson')) $('convJson').textContent = '{}';
+  renderLiveConversationThread(null);
+}
+
+function applyConversationSnapshot(payload) {
+  if ($('convJson')) $('convJson').textContent = JSON.stringify(payload, null, 2);
+  renderLiveConversationThread(payload);
+  syncConsumerTypingFromConversationPayload(payload);
+  applyAutoAckInboundFromSnapshot(payload);
+}
+
+function formatMessageTime(t) {
+  if (t == null) return '';
+  const d = typeof t === 'number' ? new Date(t) : new Date(t);
+  return Number.isFinite(d.getTime()) ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '';
+}
+
+/** Label for inbound MAIN dialog lines (profiles from server via SDK getUserProfile enrichment). */
+function inboundMessageWhoLabel(participant) {
+  if (!participant || participant.role == null) {
+    return 'Unknown';
+  }
+  if (participant.role === 'CONSUMER') {
+    return 'Visitor';
+  }
+  if (participant.displayName != null && String(participant.displayName).trim()) {
+    return String(participant.displayName).trim();
+  }
+  const prof = participant.profile;
+  if (prof && prof.nickName != null && String(prof.nickName).trim()) {
+    return String(prof.nickName).trim();
+  }
+  const name = [prof && prof.firstName, prof && prof.lastName]
+    .map((x) => (x != null ? String(x).trim() : ''))
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  if (name) {
+    return name;
+  }
+  return String(participant.role).replace(/_/g, ' ');
+}
+
+/** Outbound lines from the signed-in participant: show You + nickname when the snapshot includes profile. */
+function outboundMessageWhoLabel(participant) {
+  if (!participant || participant.role == null) {
+    return 'You';
+  }
+  if (participant.role === 'CONSUMER') {
+    return inboundMessageWhoLabel(participant);
+  }
+  const name = inboundMessageWhoLabel(participant);
+  const rolePretty = String(participant.role).replace(/_/g, ' ');
+  const hasProfile =
+    !!participant.displayName ||
+    !!(participant.profile && (participant.profile.nickName || participant.profile.firstName || participant.profile.lastName));
+  if (hasProfile || (name && name !== rolePretty && name !== 'Unknown')) {
+    return `You · ${name}`;
+  }
+  return 'You';
+}
+
+function isInboundVisitorMessage(msg) {
+  if (!msg || msg.sentByCurrentUser === true) return false;
+  const r = msg.participant && msg.participant.role;
+  return r === 'CONSUMER';
+}
+
+/** Dedupe POSTs per conversation:sequence — LP rejects duplicate accept/read. */
+const autoAcceptSucceededKeys = new Set();
+const pendingAutoAccept = new Map();
+const autoReadSucceededKeys = new Set();
+const pendingAutoRead = new Map();
+
+function autoAckVisitorKey(cid, seq) {
+  return String(cid) + ':' + String(seq);
+}
+
+function conversationDetailPaneOpenFor(cid) {
+  if (cid == null) {
+    return false;
+  }
+  const panel = $('detailPanel');
+  if (!panel || panel.hidden) {
+    return false;
+  }
+  if (state.selectedId == null) {
+    return false;
+  }
+  return String(state.selectedId) === String(cid);
+}
+
+function runAutoAcceptInboundVisitor(cid, seq) {
+  if (cid == null || seq == null) {
+    return Promise.resolve();
+  }
+  const k = autoAckVisitorKey(cid, seq);
+  if (autoAcceptSucceededKeys.has(k)) {
+    return Promise.resolve();
+  }
+  const existing = pendingAutoAccept.get(k);
+  if (existing) {
+    return existing;
+  }
+  const path = '/messages/' + encodeURIComponent(seq) + '/accept';
+  const p = jfetch('/api/conversations/' + encodeURIComponent(cid) + path, { method: 'POST', body: '{}' })
+    .then(() => {
+      autoAcceptSucceededKeys.add(k);
+      scheduleConversationsRefresh();
+    })
+    .catch((e) => {
+      console.warn('[demo] auto-accept failed', e);
+      return Promise.reject(e);
+    })
+    .finally(() => {
+      pendingAutoAccept.delete(k);
+    });
+  pendingAutoAccept.set(k, p);
+  return p;
+}
+
+function runAutoReadInboundVisitor(cid, seq) {
+  if (cid == null || seq == null) {
+    return Promise.resolve();
+  }
+  const k = autoAckVisitorKey(cid, seq);
+  if (autoReadSucceededKeys.has(k)) {
+    return Promise.resolve();
+  }
+  const existing = pendingAutoRead.get(k);
+  if (existing) {
+    return existing;
+  }
+  const path = '/messages/' + encodeURIComponent(seq) + '/read';
+  const p = jfetch('/api/conversations/' + encodeURIComponent(cid) + path, { method: 'POST', body: '{}' })
+    .then(() => {
+      autoReadSucceededKeys.add(k);
+      scheduleConversationsRefresh();
+    })
+    .catch((e) => {
+      console.warn('[demo] auto-read failed', e);
+      return Promise.reject(e);
+    })
+    .finally(() => {
+      pendingAutoRead.delete(k);
+    });
+  pendingAutoRead.set(k, p);
+  return p;
+}
+
+/**
+ * Accept as soon as the UI sees visitor line data (SSE + snapshot). Optionally read after accept when detail pane open.
+ */
+function ensureVisitorLineAutoAck(cid, msg, readIfOpen) {
+  if (!isInboundVisitorMessage(msg) || msg.sequence == null) {
+    return;
+  }
+  const seq = msg.sequence;
+  const needRead = !!readIfOpen && msg.hasAssignedAgentRead !== true;
+  runAutoAcceptInboundVisitor(cid, seq).then(
+    () => {
+      if (needRead) {
+        runAutoReadInboundVisitor(cid, seq);
+      }
+    },
+    () => {}
+  );
+}
+
+function applyAutoAckInboundFromSnapshot(payload) {
+  if (!payload || payload.conversationId == null) {
+    return;
+  }
+  const cid = payload.conversationId;
+  const readIfOpen = conversationDetailPaneOpenFor(cid);
+  const msgs = Array.isArray(payload.messages) ? payload.messages : [];
+  msgs.forEach((msg) => ensureVisitorLineAutoAck(cid, msg, readIfOpen));
+}
+
+function appendOutboundTicks(metaEl, msg) {
+  const span = document.createElement('span');
+  span.className = 'msg-ticks';
+  if (msg.hasConsumerRead === true) {
+    span.classList.add('msg-ticks-read');
+    span.textContent = '✓✓';
+    span.title = 'Read by visitor';
+    span.setAttribute('aria-label', 'Read by visitor');
+  } else {
+    span.classList.add('msg-ticks-delivered');
+    span.textContent = '✓';
+    span.title = 'Delivered — visitor has not read yet (when reported by LP)';
+    span.setAttribute('aria-label', 'Delivered');
+  }
+  metaEl.appendChild(span);
+}
+
+function scrollLiveConversationToEnd() {
+  const el = $('liveConvThread');
+  if (!el) return;
+  window.requestAnimationFrame(() => {
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
+function renderLiveConversationThread(payload) {
+  const root = $('liveConvThread');
+  if (!root) return;
+  root.innerHTML = '';
+
+  if (!payload) {
+    const p = document.createElement('p');
+    p.className = 'live-conv-placeholder';
+    p.textContent = 'Select a conversation from the list.';
+    root.appendChild(p);
+    return;
+  }
+
+  const msgs = Array.isArray(payload.messages) ? payload.messages.slice() : [];
+  msgs.sort((a, b) => Number(a.sequence) - Number(b.sequence));
+
+  if (msgs.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'live-conv-placeholder';
+    p.textContent = 'No messages in MAIN dialog yet. Send from the composer or wait for visitor messages.';
+    root.appendChild(p);
+    return;
+  }
+
+  msgs.forEach((msg) => {
+    const outbound = msg.sentByCurrentUser === true;
+    const row = document.createElement('div');
+    row.className = 'live-msg-row ' + (outbound ? 'live-msg-row--out' : 'live-msg-row--in');
+
+    const bubble = document.createElement('div');
+    bubble.className = 'live-msg-bubble';
+
+    if (msg.participant && msg.participant.role) {
+      const who = document.createElement('span');
+      who.className = 'live-msg-who';
+      who.textContent = outbound ? outboundMessageWhoLabel(msg.participant) : inboundMessageWhoLabel(msg.participant);
+      bubble.appendChild(who);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'live-msg-body';
+    const text = msg.body != null ? String(msg.body) : '';
+    body.textContent = text || '(empty message)';
+    if (!text) body.style.fontStyle = 'italic';
+    bubble.appendChild(body);
+
+    const metaTop = document.createElement('div');
+    metaTop.className = outbound ? 'live-msg-meta live-msg-meta--out' : 'live-msg-meta live-msg-meta--in';
+
+    const lineId = document.createElement('span');
+    lineId.className = 'live-msg-line-id';
+    const timeStr = formatMessageTime(msg.time);
+    lineId.textContent =
+      '#' + (msg.sequence != null ? msg.sequence : '') + (timeStr ? ' · ' + timeStr : '');
+    metaTop.appendChild(lineId);
+
+    if (outbound) {
+      appendOutboundTicks(metaTop, msg);
+      bubble.appendChild(metaTop);
+    } else {
+      const readSpan = document.createElement('span');
+      readSpan.className = 'live-msg-inread' + (msg.hasAssignedAgentRead === true ? ' is-read' : '');
+      if (msg.hasAssignedAgentRead === true) {
+        const tick = document.createElement('span');
+        tick.className = 'msg-ticks-read';
+        tick.textContent = '✓✓ ';
+        tick.setAttribute('aria-hidden', 'true');
+        readSpan.appendChild(tick);
+        readSpan.appendChild(document.createTextNode('Read'));
+      } else if (isInboundVisitorMessage(msg)) {
+        readSpan.textContent = 'Unread';
+      }
+      if (readSpan.textContent.trim() !== '') {
+        metaTop.appendChild(readSpan);
+      }
+      bubble.appendChild(metaTop);
+    }
+
+    row.appendChild(bubble);
+    root.appendChild(row);
+  });
+
+  scrollLiveConversationToEnd();
 }
 
 /** Non-consumer participant chat-state (agents, bots, transfers, …). Consumer uses the badge above. */
@@ -543,8 +833,17 @@ function startSse() {
       if (t === 'ring' && o.data && o.data.ringId != null) {
         maybePlayIncomingRing(o.data.ringId);
       }
-      if (t === 'message' && o.data && o.data.message && o.data.message.sentByCurrentUser !== true) {
-        maybePlayIncomingMessage(o.data.conversationId);
+      if (t === 'message' && o.data && o.data.message) {
+        if (o.data.message.sentByCurrentUser !== true) {
+          maybePlayIncomingMessage(o.data.conversationId);
+        }
+        if (o.data.conversationId != null) {
+          const cid = o.data.conversationId;
+          const msg = o.data.message;
+          if (isInboundVisitorMessage(msg)) {
+            ensureVisitorLineAutoAck(cid, msg, conversationDetailPaneOpenFor(cid));
+          }
+        }
       }
       if (t === 'participant-chat-state') {
         applyParticipantChatStateFromSse(o);
@@ -558,7 +857,7 @@ function startSse() {
           resetAgentComposeAutomation();
           setTypingLiveLine('Others: —');
           updateConsumerTypingBadge('ACTIVE');
-          if ($('convJson')) $('convJson').textContent = '{}';
+          clearConversationDetailSnapshots();
           logEvent(`[SSE back-to-queue] closed detail pane for conversation ${cq}`);
         }
       }
@@ -607,7 +906,7 @@ function pruneStaleSelection(convList) {
   resetAgentComposeAutomation();
   setTypingLiveLine('Others: —');
   updateConsumerTypingBadge('ACTIVE');
-  if ($('convJson')) $('convJson').textContent = '{}';
+  clearConversationDetailSnapshots();
 }
 
 async function listConversations(reason) {
@@ -653,8 +952,7 @@ async function selectConversation(id) {
   $('detailPanel').hidden = false;
   $('selId').textContent = id;
   const j = await jfetch('/api/conversations/' + encodeURIComponent(id));
-  $('convJson').textContent = JSON.stringify(j.data, null, 2);
-  syncConsumerTypingFromConversationPayload(j.data);
+  applyConversationSnapshot(j.data);
   document.querySelectorAll('.conv-item').forEach((b) => {
     b.classList.toggle('active', b.textContent.startsWith(id));
   });
@@ -826,7 +1124,7 @@ function wire() {
       body: JSON.stringify({ role }),
     })
       .then((r) => {
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
+        applyConversationSnapshot(r.data);
       })
       .catch((e) => alert(e.message));
   });
@@ -842,7 +1140,7 @@ function wire() {
     })
       .then((r) => {
         $('msgText').value = '';
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
+        applyConversationSnapshot(r.data);
         return onAgentMessageSent();
       })
       .catch((e) => alert(e.message));
@@ -870,8 +1168,7 @@ function wire() {
       return;
     }
     jfetch('/api/conversations/' + encodeURIComponent(state.selectedId) + '/leave', { method: 'POST', body: '{}' })
-      .then((r) => {
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
+      .then(() => {
         state.selectedId = null;
         const panel = $('detailPanel');
         if (panel) {
@@ -880,6 +1177,7 @@ function wire() {
         resetAgentComposeAutomation();
         setTypingLiveLine('Others: —');
         updateConsumerTypingBadge('ACTIVE');
+        clearConversationDetailSnapshots();
         return listConversations('after_leave');
       })
       .catch((e) => alert(e.message));
@@ -897,7 +1195,7 @@ function wire() {
       body: JSON.stringify({ mode: 'mainDialog' }),
     })
       .then((r) => {
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
+        applyConversationSnapshot(r.data);
       })
       .catch((e) => alert(e.message));
   });
@@ -914,7 +1212,7 @@ function wire() {
       body: JSON.stringify({ mode: 'full' }),
     })
       .then((r) => {
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
+        applyConversationSnapshot(r.data);
       })
       .catch((e) => alert(e.message));
   });
@@ -925,31 +1223,10 @@ function wire() {
     }
     jfetch('/api/conversations/' + encodeURIComponent(state.selectedId) + '/history', { method: 'POST', body: '{}' })
       .then((r) => {
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
+        applyConversationSnapshot(r.data);
       })
       .catch((e) => alert(e.message));
   });
-
-  $('btnAccept').addEventListener('click', () => doAccRead('accept'));
-  $('btnRead').addEventListener('click', () => doAccRead('read'));
-
-  function doAccRead(mode) {
-    if (!state.selectedId) {
-      return;
-    }
-    const seq = String($('seqInput').value || '').trim();
-    if (!seq) {
-      alert('Enter message sequence number from the list below.');
-      return;
-    }
-    const path =
-      mode === 'accept'
-        ? '/messages/' + encodeURIComponent(seq) + '/accept'
-        : '/messages/' + encodeURIComponent(seq) + '/read';
-    jfetch('/api/conversations/' + encodeURIComponent(state.selectedId) + path, { method: 'POST', body: '{}' }).catch(
-      (e) => alert(e.message)
-    );
-  }
 }
 
 function renderRings() {
