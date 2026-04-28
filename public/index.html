@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Messaging Platform SDK — Demo Workspace</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <h1>Messaging Platform SDK · Brand workspace</h1>
+        <p class="sub">
+          Human agents: <strong>username + password</strong> — the SDK calls LivePerson
+          <code>agentVep</code> <code>POST /api/account/{accountId}/login</code> to obtain a bearer session, then
+          opens the brand WebSocket (see <code>lp-messaging-sdk/lib/services/agentVep.js</code>). You can also use
+          <strong>OAuth1</strong> (bot keys in <code>.env</code>) or a pre-built <strong>session</strong> object for
+          SAML/SSO handoff. After connect, <code>userId</code> / <code>agentId</code> identify this single LP user.
+        </p>
+      </div>
+      <div class="status-header-right" aria-label="Connection status (read only)">
+        <div id="sessionPill" class="conn-pill muted-pill header-status" role="status" aria-live="polite" title="Messaging SDK WebSocket session">Session —</div>
+        <div id="availPill" class="conn-pill muted-pill header-status" role="status" aria-live="polite" title="Agent routing availability from setAgentState">Availability —</div>
+      </div>
+    </header>
+
+    <section class="panel" id="connectionPanel">
+      <h2>Connection</h2>
+      <p class="hint">
+        <strong>Switch agent (agenta ↔ agentb):</strong> close the connection, then open again with the other
+        username. Do not run two server connections for the same user (SDK token invalidation). For SAML, use auth mode
+        “Session” and pass <code>authAgentSessionData</code> your SP receives after federated login.
+      </p>
+      <div class="auth-grid">
+        <label>Account ID
+          <input type="text" id="accountId" placeholder="a41244303" autocomplete="off" />
+        </label>
+        <label>Auth mode
+          <select id="authMode">
+            <option value="password" selected>Password (human agent) — recommended</option>
+            <option value="oauth1">OAuth1 (keys in .env, bot-style app user)</option>
+            <option value="session">Session (token + csrf + sessionId) — SAML / custom</option>
+          </select>
+        </label>
+        <div id="pwBlock" class="auth-block">
+          <label>Username
+            <input type="text" id="userName" autocomplete="username" />
+          </label>
+          <label>Password
+            <input type="password" id="userPassword" autocomplete="current-password" />
+          </label>
+          <p class="hint">Quick fill (usernames only — type the password in your secure environment):</p>
+          <div class="btn-row" id="quickUserRow"></div>
+        </div>
+        <div id="sessionBlock" class="auth-block" hidden>
+          <label><code>authAgentSessionData</code> (JSON: token, csrf, sessionId)
+            <textarea id="sessionJson" rows="4" class="mono" placeholder='{"token":"...","csrf":"...","sessionId":"..."}'></textarea>
+          </label>
+        </div>
+        <p id="oauthHint" class="hint" hidden>Uses <code>ACCOUNT_ID</code> and six OAuth1 variables in <code>.env</code> (LPM_USERNAME, APP_KEY, …).</p>
+      </div>
+      <div class="btn-row">
+        <button type="button" id="btnConnect" class="primary">Open connection</button>
+        <button type="button" id="btnDisconnect">Close connection</button>
+        <button type="button" id="btnRefresh">Refresh status</button>
+      </div>
+      <pre id="statusBox" class="code">{}</pre>
+    </section>
+
+    <section class="panel two-col">
+      <div>
+        <h2>Agent routing (rings)</h2>
+        <p class="hint">
+          The <strong>pills at the top right</strong> show live status only — they are <strong>not</strong> buttons.
+          Use the rows below to change availability and subscribe to rings.
+        </p>
+        <p class="hint">
+          Typical flow: connect → set availability (often <strong>ONLINE</strong>) → <strong>Subscribe routing tasks</strong>
+          → accept or reject rings here or via events. Ring acceptance adds you as <code>ASSIGNED_AGENT</code>.
+        </p>
+        <h3 class="h3">Step 1 — Availability (<code>setAgentState</code>)</h3>
+        <p class="hint">
+          Each button calls the same API as <code>connection.setAgentState</code>. Until you click one, availability is
+          <code>null</code> on this connection. After a click, check the top-right <strong>Availability</strong> pill or
+          the Connection status JSON — and the Live events log on the right for a line like <code>agent/availability → AWAY</code>.
+        </p>
+        <div class="btn-row btn-row-tight">
+          <button type="button" id="btnAvailOnline" class="primary">ONLINE</button>
+          <button type="button" id="btnAvailAway">Away</button>
+          <button type="button" id="btnAvailBackSoon">Back soon</button>
+          <button type="button" id="btnAvailOffline" class="warn">Offline</button>
+        </div>
+        <h3 class="h3">Step 2 — Routing subscription</h3>
+        <p class="hint">
+          Separate from availability: this registers for <strong>routing-task / ring</strong> notifications so pending
+          rings appear in the list below. Usually do this after you are <strong>ONLINE</strong> so routing can assign offers.
+        </p>
+        <div class="btn-row btn-row-tight">
+          <button type="button" id="btnRingSub">Subscribe routing tasks</button>
+        </div>
+        <h3 class="h3">Pending rings</h3>
+        <ul id="ringList" class="list"></ul>
+      </div>
+      <div>
+        <h2>Live events (SSE)</h2>
+        <p class="hint">Server-Sent Events stream for SDK-originated activity.</p>
+        <div class="btn-row">
+          <button type="button" id="btnClearLog">Clear log</button>
+        </div>
+        <div id="eventLog" class="event-log" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Conversations</h2>
+      <p class="hint">
+        Default brand subscription: <code>stage: ["OPEN"]</code> unless you set
+        <code>SUBSCRIPTION_AGENT_ID</code> or <code>SUBSCRIPTION_QUERY_JSON</code> in <code>.env</code>.
+      </p>
+      <div class="btn-row">
+        <button type="button" id="btnListConv">Refresh list</button>
+      </div>
+      <ul id="convList" class="conv-list"></ul>
+    </section>
+
+    <section class="panel" id="detailPanel" hidden>
+      <h2>Conversation <span id="selId"></span></h2>
+      <div class="grid-detail">
+        <div>
+          <h3 class="h3">Join &amp; send</h3>
+          <p class="hint">Join with <code>ASSIGNED_AGENT</code> to send to the consumer. Roles are from <code>ParticipantRole</code>.</p>
+          <label>Role <select id="joinRole"></select></label>
+          <div class="btn-row">
+            <button type="button" id="btnJoin" class="primary">Join</button>
+            <button type="button" id="btnLoadHist">Load full history (getAllPublishEvents)</button>
+          </div>
+          <label class="block">Message <textarea id="msgText" rows="3" placeholder="Plain text message"></textarea></label>
+          <div id="typingAgentIndicator" class="typing-agent-indicator not-typing">Not typing</div>
+          <div id="consumerTypingIndicator" class="consumer-typing-badge consumer-idle" role="status" aria-live="polite">
+            Consumer active
+          </div>
+          <p id="typingLiveLine" class="hint typing-live-line" aria-live="polite">Others: —</p>
+          <p class="hint">
+            Your chat state updates automatically: <strong>COMPOSING</strong> is sent once when you start typing;
+            <strong>ACTIVE</strong> after you pause (~2.8s), clear the box, leave the field, or send.
+            <strong>Consumer composing / active</strong> updates from the visitor’s channel when LivePerson delivers chat
+            state. Other participant states (e.g. transfers) appear under <strong>Others</strong>.
+          </p>
+          <div class="btn-row">
+            <button type="button" id="btnSend" class="primary">Send</button>
+          </div>
+        </div>
+        <div>
+          <h3 class="h3">Transfer, queue, close</h3>
+          <p class="hint">
+            Transfer uses <code>conversation.transfer({ skillId } | { agentId })</code> with full
+            <code>accountId.agentId</code> for agent. Leave dialog may return conversation to the queue in routing
+            scenarios. Close main dialog vs full conversation is documented in the SDK README (PCS survey).
+          </p>
+          <label>Skill id <input type="text" id="xferSkill" placeholder="e.g. 123456" /></label>
+          <label>Agent id (full) <input type="text" id="xferAgent" placeholder="accountId.userId" /></label>
+          <div class="btn-row">
+            <button type="button" id="btnTransfer">Transfer</button>
+            <button type="button" id="btnLeave">Leave dialog</button>
+            <button type="button" id="btnCloseMain" class="warn">Close MAIN dialog</button>
+            <button type="button" id="btnCloseFull" class="danger">Close full conversation</button>
+          </div>
+        </div>
+        <div>
+          <h3 class="h3">Delivery / read (consumer messages)</h3>
+          <p class="hint">
+            For assigned agents/consumers, the SDK message object supports <code>accept()</code> and
+            <code>read()</code> as in the README.
+          </p>
+          <label>Sequence # <input type="number" id="seqInput" min="0" step="1" /></label>
+          <div class="btn-row">
+            <button type="button" id="btnAccept">Accept</button>
+            <button type="button" id="btnRead">Read</button>
+          </div>
+        </div>
+      </div>
+      <h3 class="h3">Messages &amp; participants</h3>
+      <pre id="convJson" class="code scroll">{}</pre>
+    </section>
+
+    <section class="panel">
+      <h2>Coverage of typical “Sahar / custom agent UI” questions</h2>
+      <p class="hint">
+        This UI exercises only what the Messaging Platform SDK documents in the shipped README (connection, subscription,
+        join roles, send, accept/read, typing via chat state, transfer, leave, close main vs full, rings, event stream).
+        Account-level features (SSO, feature flags, channel quirks) are for LivePerson solution design—not duplicated
+        here.
+      </p>
+      <ol class="qmap">
+        <li><strong>1–2 Identity / one login</strong> — status shows the connected <code>userId</code> / <code>agentId</code>; all sends are that LP user’s.</li>
+        <li><strong>3 Joining</strong> — join with selectable <code>ParticipantRole</code>.</li>
+        <li><strong>4 Names in history</strong> — message JSON includes <code>participant</code> and roles.</li>
+        <li><strong>5–6 Chat state (“typing”)</strong> — Your typing badge + <strong>Consumer composing / active</strong>
+          from chat-state; other roles under <strong>Others</strong>.</li>
+        <li><strong>7 Read/delivered</strong> — flags on serialized messages; accept/read on consumer lines.</li>
+        <li><strong>8–9 Transfer / queue</strong> — transfer skill/agent, leave, back-to-queue and transfer events in SSE.</li>
+        <li><strong>10 Close / survey</strong> — two close modes documented in README.</li>
+        <li><strong>11 WebSocket</strong> — server holds one SDK (WebSocket) connection; client uses HTTP + SSE.</li>
+        <li><strong>12 User mapping</strong> — not automated; out of scope for SDK-only doc.</li>
+      </ol>
+    </section>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

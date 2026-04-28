@@ -1,0 +1,17 @@
+node_modules/
+.env
+
+# Local Sahar folder (plans, translated questions, scratch TS, Typing-* handoff docs, …)
+Sahar/
+
+# Archives
+*.7z
+
+# Logs & caches
+*.log
+npm-debug.log*
+.npm
+
+# OS files
+.DS_Store
+Thumbs.db
