@@ -31,7 +31,139 @@ const state = {
   selectedId: null,
   eventSource: null,
   agentUserId: null,
+  /** When true, routing / message tones are suppressed (persisted). */
+  soundMuted: false,
 };
+
+const STORAGE_SOUND_MUTED = 'mpdemo_sound_muted';
+
+/** Avoid double-chime when multiple SSE updates hit the same ring. */
+const lastRingSoundAt = {};
+/** Throttle message chimes per conversation. */
+const lastMsgSoundAt = {};
+
+let audioContext = null;
+
+function getAudioContext() {
+  if (!audioContext) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    audioContext = Ctor ? new Ctor() : null;
+  }
+  return audioContext;
+}
+
+/** Resume audio after a user gesture (browser autoplay policies). */
+function primeAudioContext() {
+  const ctx = getAudioContext();
+  if (!ctx) {
+    return Promise.resolve();
+  }
+  if (ctx.state === 'suspended') {
+    return ctx.resume().catch(() => {});
+  }
+  return Promise.resolve();
+}
+
+function loadSoundMutedFromStorage() {
+  try {
+    state.soundMuted = localStorage.getItem(STORAGE_SOUND_MUTED) === '1';
+  } catch (_) {
+    state.soundMuted = false;
+  }
+}
+
+function updateMuteButtonUi() {
+  const b = $('btnSoundMute');
+  if (!b) {
+    return;
+  }
+  const muted = !!state.soundMuted;
+  b.setAttribute('aria-pressed', muted ? 'true' : 'false');
+  b.textContent = muted ? 'Unmute sounds' : 'Mute sounds';
+  b.classList.toggle('sound-muted', muted);
+  b.title = muted ? 'Sounds are muted' : 'Mute notification tones';
+}
+
+/**
+ * Brief sine blip; Web Audio API only (no sound files).
+ * @param {number} hz
+ * @param {number} durationMs
+ * @param {number} gainApprox
+ */
+function playToneBlip(hz, durationMs, gainApprox) {
+  const g0 = gainApprox == null ? 0.06 : gainApprox;
+  if (state.soundMuted) {
+    return;
+  }
+  const ctx = getAudioContext();
+  if (!ctx) {
+    return;
+  }
+  try {
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    const t0 = ctx.currentTime;
+    const sec = durationMs / 1000;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = hz;
+    g.gain.setValueAtTime(0.001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.02, g0), t0 + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + sec);
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + sec + 0.04);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function soundIncomingRing() {
+  if (state.soundMuted) {
+    return;
+  }
+  playToneBlip(784, 105, 0.065);
+  window.setTimeout(() => playToneBlip(988, 92, 0.055), 118);
+}
+
+function soundRingAccepted() {
+  playToneBlip(523, 155, 0.068);
+}
+
+function soundIncomingMessage() {
+  playToneBlip(659, 75, 0.052);
+}
+
+function maybePlayIncomingRing(ringId) {
+  if (!ringId || state.soundMuted) {
+    return;
+  }
+  const k = String(ringId);
+  const now = Date.now();
+  const prev = lastRingSoundAt[k];
+  if (prev != null && now - prev < 1600) {
+    return;
+  }
+  lastRingSoundAt[k] = now;
+  soundIncomingRing();
+}
+
+function maybePlayIncomingMessage(conversationId) {
+  if (conversationId == null || state.soundMuted) {
+    return;
+  }
+  const k = String(conversationId);
+  const now = Date.now();
+  const prev = lastMsgSoundAt[k];
+  if (prev != null && now - prev < 450) {
+    return;
+  }
+  lastMsgSoundAt[k] = now;
+  soundIncomingMessage();
+}
 
 function setAvailabilityPill(avail, label) {
   const el = $('availPill');
@@ -135,6 +267,14 @@ function logEvent(line) {
   }
 }
 
+/** Visible under “Refresh list” — also duplicate key lines via logEvent / console. */
+function setConvListStatus(text) {
+  const el = $('convListStatus');
+  if (el) {
+    el.textContent = text;
+  }
+}
+
 /** SSE topics after which we refresh /api/conversations (SDK-driven updates). */
 const CONVERSATION_REFRESH_TOPICS = new Set([
   'connection-connect',
@@ -156,8 +296,11 @@ const CONVERSATION_REFRESH_TOPICS = new Set([
 let conversationRefreshTimer = null;
 
 async function refreshConversationsUi() {
-  await listConversations();
-  if (!state.selectedId || !$('convJson')) {
+  await listConversations('sse_refresh');
+  if (!state.selectedId) {
+    return;
+  }
+  if (!$('convJson')) {
     return;
   }
   try {
@@ -397,8 +540,27 @@ function startSse() {
         return;
       }
       logEvent(`${new Date(o.t).toLocaleTimeString()}  ${t}  ${JSON.stringify(o.data)}`);
+      if (t === 'ring' && o.data && o.data.ringId != null) {
+        maybePlayIncomingRing(o.data.ringId);
+      }
+      if (t === 'message' && o.data && o.data.message && o.data.message.sentByCurrentUser !== true) {
+        maybePlayIncomingMessage(o.data.conversationId);
+      }
       if (t === 'participant-chat-state') {
         applyParticipantChatStateFromSse(o);
+      }
+      if (t === 'back-to-queue' && o.data && o.data.conversationId != null) {
+        const cq = String(o.data.conversationId);
+        if (state.selectedId != null && String(state.selectedId) === cq) {
+          state.selectedId = null;
+          const panel = $('detailPanel');
+          if (panel) panel.hidden = true;
+          resetAgentComposeAutomation();
+          setTypingLiveLine('Others: —');
+          updateConsumerTypingBadge('ACTIVE');
+          if ($('convJson')) $('convJson').textContent = '{}';
+          logEvent(`[SSE back-to-queue] closed detail pane for conversation ${cq}`);
+        }
       }
       if (CONVERSATION_REFRESH_TOPICS.has(t)) {
         scheduleConversationsRefresh();
@@ -420,7 +582,8 @@ function renderConversations(list) {
     const li = document.createElement('li');
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'conv-item' + (state.selectedId === id ? ' active' : '');
+    const idStr = id == null ? '' : String(id);
+    btn.className = 'conv-item' + (String(state.selectedId) === idStr ? ' active' : '');
     btn.textContent = `${id} · ${c.stage || ''} · skill ${c.skill ? c.skill.skillId : '?'}`;
     btn.addEventListener('click', () => selectConversation(id));
     li.appendChild(btn);
@@ -428,9 +591,59 @@ function renderConversations(list) {
   });
 }
 
-async function listConversations() {
-  const j = await jfetch('/api/conversations');
-  renderConversations(j.data);
+/** If the selected conversation is no longer in the subscription list, close the detail panel (e.g. after transfer). */
+function pruneStaleSelection(convList) {
+  if (!state.selectedId) {
+    return;
+  }
+  const ids = (convList || []).map((c) => (c && c.conversationId != null ? String(c.conversationId) : '')).filter(Boolean);
+  const selStr = state.selectedId != null ? String(state.selectedId) : '';
+  if (!selStr || ids.includes(selStr)) {
+    return;
+  }
+  state.selectedId = null;
+  const panel = $('detailPanel');
+  if (panel) panel.hidden = true;
+  resetAgentComposeAutomation();
+  setTypingLiveLine('Others: —');
+  updateConsumerTypingBadge('ACTIVE');
+  if ($('convJson')) $('convJson').textContent = '{}';
+}
+
+async function listConversations(reason) {
+  const why = reason || 'unspecified';
+  const t0 = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
+  console.info('[demo] listConversations start', { reason: why, at: new Date().toISOString() });
+  try {
+    const j = await jfetch('/api/conversations');
+    const rows = j && Array.isArray(j.data) ? j.data : null;
+    if (rows === null) {
+      console.warn('[demo] /api/conversations unexpected JSON (expected { data: array })', j);
+      logEvent(
+        `[${why}] WARN: server response has no data[] — open DevTools Console (F12). Keys: ${JSON.stringify(Object.keys(j || {}))}`
+      );
+      renderConversations([]);
+      pruneStaleSelection([]);
+      setConvListStatus('Last fetch: bad response shape (see Console).');
+      return [];
+    }
+    const ids = rows.map((c) => (c && c.conversationId != null ? String(c.conversationId) : '')).filter(Boolean);
+    renderConversations(rows);
+    pruneStaleSelection(rows);
+    const ms = typeof performance !== 'undefined' && performance.now ? Math.round(performance.now() - t0) : null;
+    const summary = `${rows.length} row(s)${ms != null ? ` ${ms}ms` : ''} — ${ids.length ? ids.join(', ') : '(none)'}`;
+    const line = `[${why}] ${summary}`;
+    logEvent(line);
+    setConvListStatus(`Last list fetch (${why}): ${summary}`);
+    console.info('[demo] listConversations ok', { reason: why, count: rows.length, conversationIds: ids });
+    return rows;
+  } catch (e) {
+    const msg = e.message || String(e);
+    logEvent(`[${why}] ERROR: ${msg}`);
+    setConvListStatus(`Last fetch failed (${why}): ${msg}`);
+    console.error('[demo] listConversations error', why, e);
+    throw e;
+  }
 }
 
 async function selectConversation(id) {
@@ -531,7 +744,7 @@ async function onConnect() {
   try {
     await jfetch('/api/connection/open', { method: 'POST', body: JSON.stringify(payload) });
     await refreshStatus();
-    await listConversations();
+    await listConversations('after_connect');
   } finally {
     setConnectConnecting(false);
   }
@@ -544,15 +757,39 @@ async function onDisconnect() {
   $('detailPanel').hidden = true;
   await refreshStatus();
   renderConversations([]);
+  setConvListStatus('Disconnected — list cleared.');
 }
 
 function wire() {
+  loadSoundMutedFromStorage();
+  updateMuteButtonUi();
+
   $('authMode').addEventListener('change', onAuthModeChange);
 
-  $('btnConnect').addEventListener('click', () => onConnect().catch((e) => alert(e.message)));
+  const btnMute = $('btnSoundMute');
+  if (btnMute) {
+    btnMute.addEventListener('click', () => {
+      state.soundMuted = !state.soundMuted;
+      try {
+        localStorage.setItem(STORAGE_SOUND_MUTED, state.soundMuted ? '1' : '0');
+      } catch (_) {
+        /* ignore */
+      }
+      updateMuteButtonUi();
+      primeAudioContext();
+    });
+  }
+
+  $('btnConnect').addEventListener('click', () =>
+    primeAudioContext().finally(() => onConnect().catch((e) => alert(e.message)))
+  );
   $('btnDisconnect').addEventListener('click', () => onDisconnect().catch((e) => alert(e.message)));
   $('btnRefresh').addEventListener('click', () => refreshStatus().catch((e) => alert(e.message)));
-  $('btnListConv').addEventListener('click', () => listConversations().catch((e) => alert(e.message)));
+  $('btnListConv').addEventListener('click', () => {
+    primeAudioContext().catch(() => {});
+    console.info('[demo] Refresh list button clicked');
+    listConversations('refresh_button').catch((e) => alert(e.message));
+  });
 
   $('btnAvailOnline').addEventListener('click', () =>
     submitAvailability('ONLINE').catch((e) => alert(e.message))
@@ -624,9 +861,7 @@ function wire() {
       method: 'POST',
       body: JSON.stringify({ skillId, agentId }),
     })
-      .then((r) => {
-        $('convJson').textContent = JSON.stringify(r.data, null, 2);
-      })
+      .then(() => refreshConversationsUi())
       .catch((e) => alert(e.message));
   });
 
@@ -637,6 +872,15 @@ function wire() {
     jfetch('/api/conversations/' + encodeURIComponent(state.selectedId) + '/leave', { method: 'POST', body: '{}' })
       .then((r) => {
         $('convJson').textContent = JSON.stringify(r.data, null, 2);
+        state.selectedId = null;
+        const panel = $('detailPanel');
+        if (panel) {
+          panel.hidden = true;
+        }
+        resetAgentComposeAutomation();
+        setTypingLiveLine('Others: —');
+        updateConsumerTypingBadge('ACTIVE');
+        return listConversations('after_leave');
       })
       .catch((e) => alert(e.message));
   });
@@ -724,7 +968,10 @@ function renderRings() {
         b1.textContent = 'Accept';
         b1.addEventListener('click', () => {
           jfetch('/api/rings/' + encodeURIComponent(r.ringId) + '/accept', { method: 'POST', body: '{}' })
-            .then(() => refreshConversationsUi().catch(() => {}))
+            .then(() => {
+              soundRingAccepted();
+              return refreshConversationsUi().catch(() => {});
+            })
             .catch((e) => alert(e.message));
         });
         const b2 = document.createElement('button');
@@ -757,6 +1004,6 @@ setInterval(() => {
   await loadHints().catch(() => {});
   await loadMeta().catch(() => {});
   await refreshStatus().catch(() => {});
-  await listConversations().catch(() => {});
+  await listConversations('page_load').catch(() => {});
   renderRings();
 })();

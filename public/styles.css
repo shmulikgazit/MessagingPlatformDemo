@@ -92,6 +92,22 @@ h3,
   background: #1a4d3a;
   color: #b8f0d0;
 }
+.conn-pill.sound-mute-btn {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  font: inherit;
+  padding: 0.4rem 0.65rem;
+  font-weight: 500;
+}
+.conn-pill.sound-mute-btn:hover {
+  border-color: var(--accent);
+}
+.conn-pill.sound-mute-btn[aria-pressed='true'],
+.conn-pill.sound-muted {
+  opacity: 0.75;
+  background: #2a3545;
+  color: var(--muted);
+}
 .conn-pill.session-pill {
   min-width: 9.5rem;
   max-width: min(36rem, 92vw);
@@ -323,6 +339,11 @@ button.btn-connecting {
   flex-direction: column;
   gap: 0.25rem;
 }
+.conv-list-status {
+  margin: 0.35rem 0 0 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.8rem;
+}
 button.conv-item {
   width: 100%;
   text-align: left;
@@ -341,6 +362,34 @@ label {
 }
 label.block {
   width: 100%;
+}
+/** Full-width message area (same max width as other inputs) with Send at bottom-right inside. */
+.compose-stack {
+  margin-bottom: 0.5rem;
+  max-width: 32rem;
+}
+.compose-stack > label {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 0.88rem;
+}
+.compose-message-wrap {
+  position: relative;
+  width: 100%;
+}
+.compose-message-wrap textarea {
+  width: 100%;
+  max-width: none;
+  display: block;
+  min-height: 6.5rem;
+  padding-right: 5.75rem;
+  padding-bottom: 2.85rem;
+  box-sizing: border-box;
+}
+.compose-message-wrap .compose-send {
+  position: absolute;
+  right: 0.45rem;
+  bottom: 0.45rem;
 }
 input,
 textarea,

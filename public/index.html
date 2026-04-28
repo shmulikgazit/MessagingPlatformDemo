@@ -18,9 +18,10 @@
           SAML/SSO handoff. After connect, <code>userId</code> / <code>agentId</code> identify this single LP user.
         </p>
       </div>
-      <div class="status-header-right" aria-label="Connection status (read only)">
+      <div class="status-header-right" aria-label="Connection status">
         <div id="sessionPill" class="conn-pill muted-pill header-status" role="status" aria-live="polite" title="Messaging SDK WebSocket session">Session —</div>
         <div id="availPill" class="conn-pill muted-pill header-status" role="status" aria-live="polite" title="Agent routing availability from setAgentState">Availability —</div>
+        <button type="button" id="btnSoundMute" class="conn-pill sound-mute-btn" aria-pressed="false" title="Mute or unmute notification tones">Mute sounds</button>
       </div>
     </header>
 
@@ -93,7 +94,9 @@
         <h3 class="h3">Step 2 — Routing subscription</h3>
         <p class="hint">
           Separate from availability: this registers for <strong>routing-task / ring</strong> notifications so pending
-          rings appear in the list below. Usually do this after you are <strong>ONLINE</strong> so routing can assign offers.
+          rings appear in the list below. The demo server also calls <strong>createRoutingTaskSubscription</strong> once
+          right after a successful connect; use the button if you need another subscription (e.g. after a failed
+          subscribe) or for testing.
         </p>
         <div class="btn-row btn-row-tight">
           <button type="button" id="btnRingSub">Subscribe routing tasks</button>
@@ -116,10 +119,15 @@
       <p class="hint">
         Default brand subscription: <code>stage: ["OPEN"]</code> unless you set
         <code>SUBSCRIPTION_AGENT_ID</code> or <code>SUBSCRIPTION_QUERY_JSON</code> in <code>.env</code>.
+        <strong>List troubleshooting:</strong> watch the status line under the button, the <strong>Live events</strong> log,
+        and browser <strong>DevTools → Console</strong> for lines tagged <code>[demo]</code>.
+        The terminal running Node logs <code>[lpWorkspace]</code> on leave; add <code>LP_CONV_DEBUG=1</code> to
+        <code>.env</code> for every list response.
       </p>
       <div class="btn-row">
         <button type="button" id="btnListConv">Refresh list</button>
       </div>
+      <p id="convListStatus" class="hint conv-list-status" aria-live="polite">List not loaded yet.</p>
       <ul id="convList" class="conv-list"></ul>
     </section>
 
@@ -134,7 +142,13 @@
             <button type="button" id="btnJoin" class="primary">Join</button>
             <button type="button" id="btnLoadHist">Load full history (getAllPublishEvents)</button>
           </div>
-          <label class="block">Message <textarea id="msgText" rows="3" placeholder="Plain text message"></textarea></label>
+          <div class="compose-stack">
+            <label for="msgText">Message</label>
+            <div class="compose-message-wrap">
+              <textarea id="msgText" rows="3" placeholder="Plain text message"></textarea>
+              <button type="button" id="btnSend" class="primary compose-send">Send</button>
+            </div>
+          </div>
           <div id="typingAgentIndicator" class="typing-agent-indicator not-typing">Not typing</div>
           <div id="consumerTypingIndicator" class="consumer-typing-badge consumer-idle" role="status" aria-live="polite">
             Consumer active
@@ -146,9 +160,6 @@
             <strong>Consumer composing / active</strong> updates from the visitor’s channel when LivePerson delivers chat
             state. Other participant states (e.g. transfers) appear under <strong>Others</strong>.
           </p>
-          <div class="btn-row">
-            <button type="button" id="btnSend" class="primary">Send</button>
-          </div>
         </div>
         <div>
           <h3 class="h3">Transfer, queue, close</h3>

@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon --watch server.js --watch lib server.js",
+    "dev": "nodemon --watch server.js --watch lib --watch public server.js",
     "connect-demo": "node index.js"
   },
   "dependencies": {
