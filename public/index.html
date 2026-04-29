@@ -165,10 +165,17 @@
           <h3 class="h3">Transfer, queue, close</h3>
           <p class="hint">
             Transfer uses <code>conversation.transfer({ skillId } | { agentId })</code> with full
-            <code>accountId.agentId</code> for agent. Leave dialog may return conversation to the queue in routing
-            scenarios. Close main dialog vs full conversation is documented in the SDK README (PCS survey).
+            <code>accountId.agentId</code> for agent. While signed in, skill targets load from the LivePerson
+            <strong>Skills API</strong> (scoped by each skill’s transfer rules); optional
+            <code>TRANSFER_SKILL_IDS</code> merges shortcuts (see <code>.env.example</code>). The dropdown includes this
+            conversation’s <strong>current skill</strong> for “back to queue”–style transfers. The manual field below
+            overrides the dropdown. Leave dialog may return the conversation to the queue in routing scenarios.
           </p>
-          <label>Skill id <input type="text" id="xferSkill" placeholder="e.g. 123456" /></label>
+          <label>Skill <select id="xferSkillSelect" aria-describedby="xferSkillHint"></select></label>
+          <p id="xferSkillHint" class="hint">
+            Uses Skills API after connect (transfer list vs all skills per LP rules); TRANSFER_SKILL_IDS adds extras when disconnected or as fallback.
+          </p>
+          <label>Skill id (manual override) <input type="text" id="xferSkill" placeholder="Overrides dropdown when filled" /></label>
           <label>Agent id (full) <input type="text" id="xferAgent" placeholder="accountId.userId" /></label>
           <div class="btn-row">
             <button type="button" id="btnTransfer">Transfer</button>
@@ -189,28 +196,6 @@
       </div>
       <h3 class="h3">Messages &amp; participants</h3>
       <pre id="convJson" class="code scroll">{}</pre>
-    </section>
-
-    <section class="panel">
-      <h2>Coverage of typical “Sahar / custom agent UI” questions</h2>
-      <p class="hint">
-        This UI exercises only what the Messaging Platform SDK documents in the shipped README (connection, subscription,
-        join roles, send, accept/read, typing via chat state, transfer, leave, close main vs full, rings, event stream).
-        Account-level features (SSO, feature flags, channel quirks) are for LivePerson solution design—not duplicated
-        here.
-      </p>
-      <ol class="qmap">
-        <li><strong>1–2 Identity / one login</strong> — status shows the connected <code>userId</code> / <code>agentId</code>; all sends are that LP user’s.</li>
-        <li><strong>3 Joining</strong> — join with selectable <code>ParticipantRole</code>.</li>
-        <li><strong>4 Names in history</strong> — message JSON includes <code>participant</code> and roles.</li>
-        <li><strong>5–6 Chat state (“typing”)</strong> — Your typing badge + <strong>Consumer composing / active</strong>
-          from chat-state; other roles under <strong>Others</strong>.</li>
-        <li><strong>7 Read/delivered</strong> — flags on serialized messages; inbound visitor messages auto accept (and read while the pane is open).</li>
-        <li><strong>8–9 Transfer / queue</strong> — transfer skill/agent, leave, back-to-queue and transfer events in SSE.</li>
-        <li><strong>10 Close / survey</strong> — two close modes documented in README.</li>
-        <li><strong>11 WebSocket</strong> — server holds one SDK (WebSocket) connection; client uses HTTP + SSE.</li>
-        <li><strong>12 User mapping</strong> — not automated; out of scope for SDK-only doc.</li>
-      </ol>
     </section>
 
     <script src="/app.js" defer></script>

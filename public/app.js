@@ -33,6 +33,13 @@ const state = {
   agentUserId: null,
   /** When true, routing / message tones are suppressed (persisted). */
   soundMuted: false,
+  /** From GET /api/meta/transfer-skills (Skills API + TRANSFER_SKILL_IDS when disconnected/fallback). */
+  transferSkillCatalog: [],
+  /** Current conversation routing skill id when snapshot exposes conv.skill.skillId (for dropdown “back to queue”). */
+  currentConversationSkillId: null,
+  /** Non-fatal Skills API message from server (shown near transfer dropdown). */
+  transferSkillsApiHint: null,
+  transferSkillsStrategy: null,
 };
 
 const STORAGE_SOUND_MUTED = 'mpdemo_sound_muted';
@@ -361,15 +368,108 @@ function syncConsumerTypingFromConversationPayload(payload) {
 }
 
 function clearConversationDetailSnapshots() {
+  state.currentConversationSkillId = null;
+  refreshTransferSkillsCatalog().catch(() => {});
   if ($('convJson')) $('convJson').textContent = '{}';
   renderLiveConversationThread(null);
 }
 
+function updateXferSkillsHintUi() {
+  const el = $('xferSkillHint');
+  if (!el) {
+    return;
+  }
+  if (state.transferSkillsApiHint) {
+    el.textContent = state.transferSkillsApiHint;
+  } else {
+    el.textContent =
+      'Uses LivePerson Skills API after connect (Get Skill by ID — transfer list vs Get All Skills per LP rules). Current skill appears below for back-to-queue. TRANSFER_SKILL_IDS merges extra entries.';
+  }
+}
+
+async function refreshTransferSkillsCatalog() {
+  const selId = state.selectedId;
+  const q =
+    selId != null
+      ? '/api/meta/transfer-skills?conversationId=' + encodeURIComponent(selId)
+      : '/api/meta/transfer-skills';
+  try {
+    const xfer = await jfetch(q);
+    state.transferSkillCatalog = (xfer.data && xfer.data.skills) || [];
+    state.transferSkillsApiHint =
+      xfer.data && xfer.data.apiError != null && String(xfer.data.apiError).trim()
+        ? String(xfer.data.apiError).trim()
+        : null;
+    state.transferSkillsStrategy = xfer.data && xfer.data.strategy != null ? xfer.data.strategy : null;
+    updateXferSkillsHintUi();
+  } catch (e) {
+    state.transferSkillsApiHint = e.message || String(e);
+    updateXferSkillsHintUi();
+  }
+  populateXferSkillDropdown();
+}
+
+/**
+ * Fills #xferSkillSelect with (1) blank, (2) current conversation skill when known, (3) configured account skills.
+ */
+function populateXferSkillDropdown() {
+  const sel = $('xferSkillSelect');
+  if (!sel) {
+    return;
+  }
+  const currentId =
+    state.currentConversationSkillId != null && String(state.currentConversationSkillId).trim()
+      ? String(state.currentConversationSkillId).trim()
+      : null;
+  const catalog = Array.isArray(state.transferSkillCatalog) ? state.transferSkillCatalog : [];
+  const prevSelect = sel.value;
+
+  sel.innerHTML = '';
+  const opt0 = document.createElement('option');
+  opt0.value = '';
+  opt0.textContent = '— Select skill —';
+  sel.appendChild(opt0);
+
+  if (currentId) {
+    const o = document.createElement('option');
+    o.value = currentId;
+    o.textContent = `${currentId} — Current skill (back to queue)`;
+    sel.appendChild(o);
+  }
+
+  const seen = new Set(currentId ? [currentId] : []);
+  catalog.forEach((row) => {
+    if (!row || row.skillId == null) {
+      return;
+    }
+    const sid = String(row.skillId).trim();
+    if (!sid || seen.has(sid)) {
+      return;
+    }
+    seen.add(sid);
+    const o = document.createElement('option');
+    o.value = sid;
+    const lab = row.label != null ? String(row.label).trim() : '';
+    o.textContent = lab && lab !== sid ? `${sid} — ${lab}` : sid;
+    sel.appendChild(o);
+  });
+
+  if (prevSelect && Array.from(sel.options).some((op) => op.value === prevSelect)) {
+    sel.value = prevSelect;
+  }
+}
+
 function applyConversationSnapshot(payload) {
+  if (payload && payload.skill && payload.skill.skillId != null && payload.skill.skillId !== '') {
+    state.currentConversationSkillId = String(payload.skill.skillId);
+  } else {
+    state.currentConversationSkillId = null;
+  }
   if ($('convJson')) $('convJson').textContent = JSON.stringify(payload, null, 2);
   renderLiveConversationThread(payload);
   syncConsumerTypingFromConversationPayload(payload);
   applyAutoAckInboundFromSnapshot(payload);
+  refreshTransferSkillsCatalog().catch(() => {});
 }
 
 function formatMessageTime(t) {
@@ -1028,6 +1128,8 @@ async function loadMeta() {
     }
     sel.appendChild(o);
   });
+
+  await refreshTransferSkillsCatalog();
 }
 
 async function onConnect() {
@@ -1043,6 +1145,7 @@ async function onConnect() {
     await jfetch('/api/connection/open', { method: 'POST', body: JSON.stringify(payload) });
     await refreshStatus();
     await listConversations('after_connect');
+    await refreshTransferSkillsCatalog();
   } finally {
     setConnectConnecting(false);
   }
@@ -1051,8 +1154,10 @@ async function onConnect() {
 async function onDisconnect() {
   await jfetch('/api/connection/close', { method: 'POST', body: '{}' });
   state.selectedId = null;
+  state.currentConversationSkillId = null;
   resetAgentComposeAutomation();
   $('detailPanel').hidden = true;
+  refreshTransferSkillsCatalog().catch(() => {});
   await refreshStatus();
   renderConversations([]);
   setConvListStatus('Disconnected — list cleared.');
@@ -1153,7 +1258,9 @@ function wire() {
     if (!state.selectedId) {
       return;
     }
-    const skillId = $('xferSkill').value.trim() || null;
+    const manualSkill = $('xferSkill').value.trim();
+    const selectedSkill = $('xferSkillSelect') ? $('xferSkillSelect').value.trim() : '';
+    const skillId = manualSkill || selectedSkill || null;
     const agentId = $('xferAgent').value.trim() || null;
     jfetch('/api/conversations/' + encodeURIComponent(state.selectedId) + '/transfer', {
       method: 'POST',
